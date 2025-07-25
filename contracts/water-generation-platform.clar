@@ -1,5 +1,3 @@
-
-
 ;; ===========================================
 ;; CONSTANTS & ERROR CODES
 ;; ===========================================
@@ -20,6 +18,20 @@
 (define-constant MIN_WATER_QUALITY u80) ;; 80% quality score minimum
 (define-constant MIN_ENERGY_LEVEL u20) ;; 20% battery minimum
 (define-constant MAX_COORDINATE u180000) ;; Coordinate bounds (1.8 degrees * 100000)
+
+;; ===========================================
+;; UTILITY FUNCTIONS
+;; ===========================================
+
+;; Custom absolute value function for integers
+(define-private (abs-int (n int))
+  (if (>= n 0) n (- n))
+)
+
+;; Custom minimum function for uints
+(define-private (min-uint (a uint) (b uint))
+  (if (<= a b) a b)
+)
 
 ;; ===========================================
 ;; DATA STRUCTURES
@@ -47,7 +59,7 @@
     temperature-celsius: int,
     pressure-hpa: uint,
     wind-speed-kmh: uint,
-    solar-irradiance: uint, ;; W/m² for solar energy calculation
+    solar-irradiance: uint, ;; W/m^2 for solar energy calculation
     recorded-by: principal
   }
 )
@@ -122,7 +134,7 @@
     (community-id uint))
   (begin
     ;; Validate coordinates (basic bounds check)
-    (asserts! (and (< (abs latitude) MAX_COORDINATE) (< (abs longitude) MAX_COORDINATE)) ERR_INVALID_COORDINATES)
+    (asserts! (and (< (abs-int latitude) (to-int MAX_COORDINATE)) (< (abs-int longitude) (to-int MAX_COORDINATE))) ERR_INVALID_COORDINATES)
     (asserts! (> capacity u0) ERR_INVALID_GENERATOR)
 
     ;; Register generator
@@ -211,32 +223,23 @@
     (generator (map-get? water-generators { generator-id: generator-id }))
     (energy-system (map-get? energy-systems { generator-id: generator-id }))
   )
-    (match conditions
-      some-conditions
-        (match generator
-          some-generator
-            (match energy-system
-              some-energy
-                (let (
-                  (humidity (get humidity-percent some-conditions))
-                  (capacity (get capacity-liters-per-day some-generator))
-                  (battery-level (get current-battery-level some-energy))
-                  (efficiency (get efficiency-rating some-energy))
-                )
-                  (ok {
-                    production-potential: (/ (* capacity humidity efficiency) u10000),
-                    energy-sufficient: (>= battery-level MIN_ENERGY_LEVEL),
-                    humidity-adequate: (>= humidity MIN_HUMIDITY),
-                    recommended-action: (if (and (>= humidity MIN_HUMIDITY) (>= battery-level MIN_ENERGY_LEVEL))
-                                          "start-production"
-                                          "wait-for-conditions")
-                  })
-                )
-              none (err ERR_INVALID_GENERATOR)
-            )
-          none (err ERR_INVALID_GENERATOR)
-        )
-      none (err ERR_INVALID_GENERATOR)
+    (if (and (is-some conditions) (is-some generator) (is-some energy-system))
+      (let (
+        (humidity (get humidity-percent (unwrap-panic conditions)))
+        (capacity (get capacity-liters-per-day (unwrap-panic generator)))
+        (battery-level (get current-battery-level (unwrap-panic energy-system)))
+        (efficiency (get efficiency-rating (unwrap-panic energy-system)))
+      )
+        (ok {
+          production-potential: (/ (* capacity humidity efficiency) u10000),
+          energy-sufficient: (>= battery-level MIN_ENERGY_LEVEL),
+          humidity-adequate: (>= humidity MIN_HUMIDITY),
+          recommended-action: (if (and (>= humidity MIN_HUMIDITY) (>= battery-level MIN_ENERGY_LEVEL))
+                                "start-production"
+                                "wait-for-conditions")
+        })
+      )
+      (err ERR_INVALID_GENERATOR)
     )
   )
 )
@@ -305,7 +308,7 @@
     (daily-need uint)
     (priority uint))
   (begin
-    (asserts! (and (< (abs latitude) MAX_COORDINATE) (< (abs longitude) MAX_COORDINATE)) ERR_INVALID_COORDINATES)
+    (asserts! (and (< (abs-int latitude) (to-int MAX_COORDINATE)) (< (abs-int longitude) (to-int MAX_COORDINATE))) ERR_INVALID_COORDINATES)
     (asserts! (and (>= priority u1) (<= priority u5)) ERR_COMMUNITY_NOT_FOUND)
 
     (map-set desert-communities
@@ -327,21 +330,20 @@
 ;; Calculate water supply vs demand for community
 (define-read-only (calculate-water-balance (community-id uint))
   (let ((community (map-get? desert-communities { community-id: community-id })))
-    (match community
-      some-community
-        (let (
-          (daily-need (get daily-water-need-liters some-community))
-          ;; This would need to aggregate all generators serving this community
-          (estimated-supply u1000) ;; Simplified for this example
-        )
-          (ok {
-            daily-need: daily-need,
-            estimated-supply: estimated-supply,
-            balance: (if (>= estimated-supply daily-need) "surplus" "deficit"),
-            coverage-percentage: (/ (* estimated-supply u100) daily-need)
-          })
-        )
-      none (err ERR_COMMUNITY_NOT_FOUND)
+    (if (is-some community)
+      (let (
+        (daily-need (get daily-water-need-liters (unwrap-panic community)))
+        ;; This would need to aggregate all generators serving this community
+        (estimated-supply u1000) ;; Simplified for this example
+      )
+        (ok {
+          daily-need: daily-need,
+          estimated-supply: estimated-supply,
+          balance: (if (>= estimated-supply daily-need) "surplus" "deficit"),
+          coverage-percentage: (/ (* estimated-supply u100) daily-need)
+        })
+      )
+      (err ERR_COMMUNITY_NOT_FOUND)
     )
   )
 )
@@ -386,7 +388,7 @@
                          u0))
       (total-production (+ solar-production wind-production))
       (current-level (get current-battery-level energy-system))
-      (new-level (min u100 (+ current-level (/ total-production u10))))
+      (new-level (min-uint u100 (+ current-level (/ total-production u10))))
     )
       (map-set energy-systems
         { generator-id: generator-id }
@@ -478,16 +480,15 @@
 ;; Get community water security status
 (define-read-only (get-community-security (community-id uint))
   (let ((community (map-get? desert-communities { community-id: community-id })))
-    (match community
-      some-community
-        (ok {
-          community-info: some-community,
-          water-balance: (unwrap-panic (calculate-water-balance community-id)),
-          security-level: (if (>= (get coverage-percentage (unwrap-panic (calculate-water-balance community-id))) u100)
-                            "secure"
-                            "at-risk")
-        })
-      none (err ERR_COMMUNITY_NOT_FOUND)
+    (if (is-some community)
+      (ok {
+        community-info: (unwrap-panic community),
+        water-balance: (unwrap-panic (calculate-water-balance community-id)),
+        security-level: (if (>= (get coverage-percentage (unwrap-panic (calculate-water-balance community-id))) u100)
+                          "secure"
+                          "at-risk")
+      })
+      (err ERR_COMMUNITY_NOT_FOUND)
     )
   )
 )
@@ -503,32 +504,27 @@
     (energy-system (map-get? energy-systems { generator-id: generator-id }))
     (conditions (map-get? atmospheric-conditions { generator-id: generator-id, timestamp: stacks-block-height }))
   )
-    (match generator
-      some-generator
-        (match energy-system
-          some-energy
-            (let (
-              (energy-diversity (+
-                (if (> (get solar-capacity-kw some-energy) u0) u25 u0)
-                (if (> (get wind-capacity-kw some-energy) u0) u25 u0)
-                (if (get grid-connected some-energy) u25 u0)
-                u25)) ;; Base battery storage
-              (maintenance-score (if (< (- stacks-block-height (get last-maintenance some-energy)) u1000) u100 u50))
-              (efficiency-score (get efficiency-rating some-energy))
-            )
-              (ok {
-                overall-resilience: (/ (+ energy-diversity maintenance-score efficiency-score) u3),
-                energy-diversity: energy-diversity,
-                maintenance-status: maintenance-score,
-                efficiency-rating: efficiency-score,
-                recommendation: (if (< (/ (+ energy-diversity maintenance-score efficiency-score) u3) u70)
-                                  "upgrade-recommended"
-                                  "resilient")
-              })
-            )
-          none (err ERR_INVALID_GENERATOR)
-        )
-      none (err ERR_INVALID_GENERATOR)
+    (if (and (is-some generator) (is-some energy-system))
+      (let (
+        (energy-diversity (+
+          (if (> (get solar-capacity-kw (unwrap-panic energy-system)) u0) u25 u0)
+          (if (> (get wind-capacity-kw (unwrap-panic energy-system)) u0) u25 u0)
+          (if (get grid-connected (unwrap-panic energy-system)) u25 u0)
+          u25)) ;; Base battery storage
+        (maintenance-score (if (< (- stacks-block-height (get last-maintenance (unwrap-panic energy-system))) u1000) u100 u50))
+        (efficiency-score (get efficiency-rating (unwrap-panic energy-system)))
+      )
+        (ok {
+          overall-resilience: (/ (+ energy-diversity maintenance-score efficiency-score) u3),
+          energy-diversity: energy-diversity,
+          maintenance-status: maintenance-score,
+          efficiency-rating: efficiency-score,
+          recommendation: (if (< (/ (+ energy-diversity maintenance-score efficiency-score) u3) u70)
+                            "upgrade-recommended"
+                            "resilient")
+        })
+      )
+      (err ERR_INVALID_GENERATOR)
     )
   )
 )
